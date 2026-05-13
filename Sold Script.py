@@ -5,21 +5,34 @@ import pandas as pd
 import glob
 
 # API setup
-base_url = 'https://api-trestle.corelogic.com/trestle/odata/Property'
-auth_endpoint = 'https://idxexchange.com/internal-api/trestle_token.php?key=IDXEXCHANGE2026_CHANGE_THIS'
+base_url = "https://api-trestle.corelogic.com/trestle/odata/Property"
+auth_endpoint = "https://idxexchange.com/internal-api/trestle_token.php?key=IDXEXCHANGE2026_CHANGE_THIS"
 
 response = requests.get(auth_endpoint, timeout=30)
 response.raise_for_status()
-token = response.json().get('access_token')
+token = response.json().get("access_token")
 
-headers = {'Authorization': f'Bearer {token}'}
+headers = {"Authorization": f"Bearer {token}"}
+
+selected_fields = [
+    "ListingKey",
+    "City",
+    "PostalCode",
+    "ListPrice",
+    "OriginalListPrice",
+    "ClosePrice",
+    "CloseDate",
+    "ListingContractDate",
+    "PurchaseContractDate",
+    "LivingArea",
+    "BedroomsTotal"
+]
 
 # Date range
 start_date = datetime(2024, 1, 1)
 end_date = datetime(2026, 4, 1)
 current = start_date
 
-# LOOP THROUGH MONTHS
 while current < end_date:
     next_month = (current.replace(day=28) + timedelta(days=4)).replace(day=1)
 
@@ -27,42 +40,52 @@ while current < end_date:
 
     url = base_url
     params = {
-        '$select': 'ListingKey,City,PostalCode,ListPrice,ClosePrice,CloseDate,LivingArea,BedroomsTotal',
-        '$filter': f"MlsStatus eq 'Closed' and CloseDate ge {current.isoformat(timespec='milliseconds')}Z and CloseDate lt {next_month.isoformat(timespec='milliseconds')}Z",
-        '$top': 1000
+        "$select": ",".join(selected_fields),
+        "$filter": (
+            f"MlsStatus eq 'Closed' and "
+            f"CloseDate ge {current.isoformat(timespec='milliseconds')}Z and "
+            f"CloseDate lt {next_month.isoformat(timespec='milliseconds')}Z"
+        ),
+        "$top": 1000
     }
 
     csv_file = f"CRMLSSold{current.strftime('%Y%m')}.csv"
 
-    with open(csv_file, mode='w', newline='') as file:
-        writer = None
+    with open(csv_file, mode="w", newline="") as file:
+        writer = csv.DictWriter(file, fieldnames=selected_fields)
+        writer.writeheader()
 
         while True:
-            response = requests.get(url, params=params, headers=headers)
+            response = requests.get(url, params=params, headers=headers, timeout=30)
+            response.raise_for_status()
+
             data = response.json()
-            observations = data.get('value', [])
+            observations = data.get("value", [])
 
             if not observations:
                 break
 
-            if writer is None:
-                writer = csv.DictWriter(file, fieldnames=observations[0].keys())
-                writer.writeheader()
-
             for obs in observations:
-                writer.writerow(obs)
+                row = {field: obs.get(field, None) for field in selected_fields}
+                writer.writerow(row)
 
-            if '@odata.nextLink' in data:
-                url = data['@odata.nextLink']
+            next_link = data.get("@odata.nextLink")
+
+            if next_link:
+                url = next_link
                 params = None
             else:
                 break
 
     current = next_month
 
-# COMBINE ALL FILES
-files = glob.glob("CRMLSSold*.csv")
-df = pd.concat([pd.read_csv(f) for f in files])
+# Combine all sold files
+files = sorted(glob.glob("CRMLSSold*.csv"))
+
+df = pd.concat([pd.read_csv(file) for file in files], ignore_index=True)
+
 df.to_csv("combined_sold.csv", index=False)
 
 print("Sold complete ✅")
+print("Combined sold columns:")
+print(df.columns)
